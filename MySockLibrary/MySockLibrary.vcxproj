@@ -138,13 +138,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Sock_Init.h" />
     <ClInclude Include="TCP_Connection.h" />
     <ClInclude Include="TCP_Listener.h" />
+    <ClInclude Include="UDP_Listener.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="TCP_Connection.cpp" />
     <ClCompile Include="TCP_Listener.cpp" />
+    <ClCompile Include="UDP_Listener.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -21,6 +21,12 @@
     <ClInclude Include="TCP_Connection.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="UDP_Listener.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Sock_Init.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="TCP_Listener.cpp">
@@ -30,6 +36,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UDP_Listener.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

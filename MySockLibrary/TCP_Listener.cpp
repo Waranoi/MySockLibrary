@@ -13,18 +13,6 @@ bool Keep_Listening(TCP_Listener_Shared_Data* shared_data)
 
 DWORD WINAPI TCP_Listener_Worker(LPVOID lpParam)
 {
-    TCP_Listener_Shared_Data* shared_data = (TCP_Listener_Shared_Data*)lpParam;
-
-    // Create socket
-
-    // Accept incoming connections
-    while (Keep_Listening(shared_data))
-    {
-
-    }
-
-    // Close socket
-
     // Print to console to verify thread has run (Remove this for release)
     HANDLE hStdout;
 
@@ -36,9 +24,25 @@ DWORD WINAPI TCP_Listener_Worker(LPVOID lpParam)
     if (hStdout == INVALID_HANDLE_VALUE)
         return 1;
 
-    StringCchPrintf(msgBuf, BUF_SIZE, TEXT("Hello Thread!\n"));
+    StringCchPrintf(msgBuf, BUF_SIZE, TEXT("Hello TCP Thread!\n"));
     StringCchLength(msgBuf, BUF_SIZE, &cchStringSize);
     WriteConsole(hStdout, msgBuf, (DWORD)cchStringSize, &dwChars, NULL);
+
+    //////
+
+    TCP_Listener_Shared_Data* shared_data = (TCP_Listener_Shared_Data*)lpParam;
+
+    // Create socket
+
+    // Accept incoming connections
+    while (Keep_Listening(shared_data))
+    {
+
+
+        Sleep(100);
+    }
+
+    // Close socket
 
     return 0;
 }

@@ -25,7 +25,7 @@ public:
 	void Close();
 	bool Is_Open();
 
-//private:
+private:
 	HANDLE listener_thread;
 	DWORD listener_thread_id;
 	
