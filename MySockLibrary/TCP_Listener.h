@@ -1,8 +1,16 @@
 #pragma once
+#undef UNICODE
+#define UNICODE
+#undef _WINSOCKAPI_
+#define _WINSOCKAPI_
 
 #include <windows.h>
 #include <stdexcept>
 #include <mutex>
+#ifdef _WIN32
+#  include <WinSock2.h>
+#  pragma comment(lib, "Ws2_32.lib")
+#endif
 
 struct TCP_Listener_Shared_Data
 {

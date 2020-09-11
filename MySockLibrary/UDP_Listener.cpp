@@ -1,7 +1,14 @@
+#undef UNICODE
+#define UNICODE
+#undef _WINSOCKAPI_
+#define _WINSOCKAPI_
+
 #include "UDP_Listener.h"
 #include <strsafe.h>
-
-#define BUF_SIZE 255
+#ifdef _WIN32
+#  include <WinSock2.h>
+#  pragma comment(lib, "Ws2_32.lib")
+#endif
 
 bool Keep_Listening(UDP_Listener_Shared_Data* shared_data)
 {
@@ -13,47 +20,7 @@ bool Keep_Listening(UDP_Listener_Shared_Data* shared_data)
 
 DWORD WINAPI UDP_Listener_Worker(LPVOID lpParam)
 {
-    // Print to console to verify thread has run (Remove this for release)
-    HANDLE hStdout;
-
-    TCHAR msgBuf[BUF_SIZE];
-    size_t cchStringSize;
-    DWORD dwChars;
-
-    hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hStdout == INVALID_HANDLE_VALUE)
-        return 1;
-
-    StringCchPrintf(msgBuf, BUF_SIZE, TEXT("Hello UDP Thread!\n"));
-    StringCchLength(msgBuf, BUF_SIZE, &cchStringSize);
-    WriteConsole(hStdout, msgBuf, (DWORD)cchStringSize, &dwChars, NULL);
-
-    /////
-
     UDP_Listener_Shared_Data* shared_data = (UDP_Listener_Shared_Data*)lpParam;
-
-    // Create socket
-    SOCKET udp_socket = INVALID_SOCKET;
-    udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (udp_socket == INVALID_SOCKET) {
-        StringCchPrintf(msgBuf, BUF_SIZE, TEXT("create socket failed with error %d\n"), WSAGetLastError());
-        StringCchLength(msgBuf, BUF_SIZE, &cchStringSize);
-        WriteConsole(hStdout, msgBuf, (DWORD)cchStringSize, &dwChars, NULL);
-        return 1;
-    }
-
-    // Bind socket
-    sockaddr_in server_addr;
-    short port = 27015;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(udp_socket, (SOCKADDR*)&server_addr, sizeof(server_addr))) {
-        StringCchPrintf(msgBuf, BUF_SIZE, TEXT("bind socket failed with error %d\n"), WSAGetLastError());
-        StringCchLength(msgBuf, BUF_SIZE, &cchStringSize);
-        WriteConsole(hStdout, msgBuf, (DWORD)cchStringSize, &dwChars, NULL);
-        return 1;
-    }
 
     // select() query variables
     fd_set read_fd;
@@ -66,8 +33,8 @@ DWORD WINAPI UDP_Listener_Worker(LPVOID lpParam)
     {
         // Query for new packets
         FD_ZERO(&read_fd);
-        FD_SET(udp_socket, &read_fd);
-        int status = select(udp_socket + 1, &read_fd, NULL, NULL, &timeout);
+        FD_SET(shared_data->udp_socket, &read_fd);
+        int status = select(shared_data->udp_socket + 1, &read_fd, NULL, NULL, &timeout);
 
         if (status > 0)
         {
@@ -83,24 +50,19 @@ DWORD WINAPI UDP_Listener_Worker(LPVOID lpParam)
             int senderAddrSize = sizeof(senderAddr);
 
             // Receive packet
-            bytes_received = recvfrom(udp_socket, buf, buf_len, 0, (SOCKADDR*)&senderAddr, &senderAddrSize);
+            bytes_received = recvfrom(shared_data->udp_socket, buf, buf_len, 0, (SOCKADDR*)&senderAddr, &senderAddrSize);
             if (bytes_received > 0)
             {
                 // Add packet to shared_data queue
-                //code here...
-
-                // Temp
-                buf[bytes_received] = '\0';
-
-                StringCchPrintf(msgBuf, BUF_SIZE, TEXT("got msg %s\n"), buf);
-                StringCchLength(msgBuf, BUF_SIZE, &cchStringSize);
-                WriteConsole(hStdout, msgBuf, (DWORD)cchStringSize, &dwChars, NULL);
+                shared_data->mutex.lock();
+                if (shared_data->packet_recv_callback)
+                    shared_data->packet_recv_callback(std::vector<char>(buf, buf + bytes_received));
+                shared_data->mutex.unlock();
             }
             else if (bytes_received == SOCKET_ERROR) {
-                // Log error
-
-                // Close listener
+                // Log error and close listener
                 shared_data->mutex.lock();
+                shared_data->worker_error = "Could not listen on udp listener. Could not receive packet from udp socket.";
                 shared_data->run = false;
                 shared_data->mutex.unlock();
             }
@@ -108,20 +70,15 @@ DWORD WINAPI UDP_Listener_Worker(LPVOID lpParam)
         else if (status == SOCKET_ERROR)
         {
             // Error looking for new packet
-
-            // Log error
-            //code here...
-
-            // Close listener
+            // Log error and close listener
             shared_data->mutex.lock();
+            shared_data->worker_error = "Could not listen on udp listener. Could not query packets from udp socket.";
             shared_data->run = false;
             shared_data->mutex.unlock();
         }
 
         Sleep(100);
     }
-
-    // Close socket
 
     return 0;
 }
@@ -130,6 +87,7 @@ UDP_Listener::UDP_Listener()
     : listener_thread(nullptr)
     , listener_thread_id(0)
     , shared_data(new UDP_Listener_Shared_Data())
+    , winsock_init(false)
 {
 }
 
@@ -141,8 +99,8 @@ UDP_Listener::~UDP_Listener()
     }
     catch (...)
     {
-    }
 
+    }
     if (shared_data)
     {
         delete shared_data;
@@ -150,13 +108,69 @@ UDP_Listener::~UDP_Listener()
     }
 }
 
-void UDP_Listener::Open()
+void UDP_Listener::Open(On_Packet_Received new_packet_recv_callback, short port)
 {
     if (listener_thread)
         throw UDP_Listener_Exception("Could not open udp listener. Listener thread already running.");
 
-    // Set starting values for shared data
+    if (winsock_init)
+        throw UDP_Listener_Exception("Could not open udp listener. Winsock already initialized.");
+
+    WSADATA wsaData;
+    int res = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (res != NO_ERROR)
+        throw UDP_Listener_Exception("Could not open udp listener. Could not initialize WinSock library.");
+    winsock_init = true;
+
+    // Create socket
+    shared_data->udp_socket = INVALID_SOCKET;
+    shared_data->udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (shared_data->udp_socket == INVALID_SOCKET) {
+        char error_buf[256];
+        sprintf_s(error_buf, 256, "Could not open udp listener. Failed to create udp socket with error %d.", WSAGetLastError());
+        UDP_Listener_Exception exception = UDP_Listener_Exception(error_buf);
+
+        try
+        {
+            Close();
+        }
+        catch (UDP_Listener_Exception& close_exception)
+        {
+            char error_buf[256];
+            sprintf_s(error_buf, 256, "WARNING. Could not open udp listener. Could not clean up after failing to open udp listener.\n%s\n%s", close_exception.what(), exception.what());
+            exception = UDP_Listener_Exception(error_buf);
+        }
+        throw exception;
+    }
+
+    // Bind socket
+    sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(shared_data->udp_socket, (SOCKADDR*)&server_addr, sizeof(server_addr))) {
+        char error_buf[256];
+        sprintf_s(error_buf, 256, "Could not open udp listener. Failed to bind udp socket with error %d.", WSAGetLastError());
+        UDP_Listener_Exception exception = UDP_Listener_Exception(error_buf);
+
+        try
+        {
+            Close();
+        }
+        catch (UDP_Listener_Exception& close_exception)
+        {
+            char error_buf[256];
+            sprintf_s(error_buf, 256, "WARNING. Could not open udp listener. Could not clean up after failing to open udp listener.\n%s\n%s", close_exception.what(), exception.what());
+            exception = UDP_Listener_Exception(error_buf);
+        }
+        throw exception;
+    }
+
+    // Keep listener running
     shared_data->run = true;
+
+    // Set on packet received callback function
+    shared_data->packet_recv_callback = new_packet_recv_callback;
 
     listener_thread = CreateThread(
         NULL,                   // default security attributes
@@ -167,33 +181,107 @@ void UDP_Listener::Open()
         &listener_thread_id);   // returns the thread identifier 
 
     if (!listener_thread)
-        throw UDP_Listener_Exception("Could not open udp listener. Could not start listener thread.");
+    {
+        UDP_Listener_Exception exception = UDP_Listener_Exception("Could not open udp listener. Could not start listener thread.");
+
+        try
+        {
+            Close();
+        }
+        catch (UDP_Listener_Exception& close_exception)
+        {
+            char error_buf[256];
+            sprintf_s(error_buf, 256, "WARNING. Could not open udp listener. Could not clean up after failing to open udp listener.\n%s\n%s", close_exception.what(), exception.what());
+            exception = UDP_Listener_Exception(error_buf);
+        }
+        throw exception;
+    }
 }
 
 void UDP_Listener::Close()
 {
-    if (!listener_thread)
-        throw UDP_Listener_Exception("Could not close udp listener. Listener thread already closed.");
+    Close_Thread();
+    Close_Socket();
 
-    // Shutdown tcp listener worker
-    shared_data->mutex.lock();
-    shared_data->run = false;
-    shared_data->mutex.unlock();
+    shared_data->packet_recv_callback = nullptr;
+}
 
-    // Wait 3 seconds for tcp listener worker to shutdown
-    DWORD wait = WaitForSingleObject(listener_thread, 3000);
+void UDP_Listener::Close_Forced()
+{
+    if (listener_thread)
+    {
+        // Shutdown tcp listener worker
+        shared_data->mutex.lock();
+        shared_data->run = false;
+        shared_data->mutex.unlock();
 
-    if (wait == WAIT_TIMEOUT)
-        throw UDP_Listener_Exception("Could not close udp listener. Timed out.");
-    else if (wait != WAIT_OBJECT_0)
-        throw UDP_Listener_Exception("Could not close udp listener. Unexpected error.");
+        // Wait 3 seconds for tcp listener worker to shutdown
+        WaitForSingleObject(listener_thread, 3000);
 
-    // Close tcp listener worker thread
-    CloseHandle(listener_thread);
-    listener_thread = nullptr;
+        // Close tcp listener worker thread
+        CloseHandle(listener_thread);
+        listener_thread = nullptr;
+    }
+
+    if (shared_data->udp_socket != NULL)
+    {
+        if (shared_data->udp_socket != INVALID_SOCKET)
+            closesocket(shared_data->udp_socket);
+        shared_data->udp_socket = NULL;
+    }
+
+    shared_data->packet_recv_callback = nullptr;
+
+    if (winsock_init)
+    {
+        WSACleanup();
+        winsock_init = false;
+    }
 }
 
 bool UDP_Listener::Is_Open()
 {
     return listener_thread != nullptr;
+}
+
+void UDP_Listener::Close_Socket()
+{
+    if (shared_data->udp_socket != NULL)
+    {
+        if (shared_data->udp_socket != INVALID_SOCKET && closesocket(shared_data->udp_socket) != 0)
+            throw UDP_Listener_Exception("Could not close udp listener. Could not close socket.");
+        shared_data->udp_socket = NULL;
+    }
+
+    if (winsock_init)
+    {
+        int res = WSACleanup();
+        if (res != NO_ERROR)
+            throw UDP_Listener_Exception("Could not close udp listener. Could not terminate WinSock library.");
+        winsock_init = false;
+    }
+}
+
+void UDP_Listener::Close_Thread()
+{
+    if (listener_thread)
+    {
+        // Shutdown udp listener worker
+        shared_data->mutex.lock();
+        shared_data->run = false;
+        shared_data->mutex.unlock();
+
+        // Wait 3 seconds for udp listener worker to shutdown
+        DWORD wait = WaitForSingleObject(listener_thread, 3000);
+
+        if (wait == WAIT_TIMEOUT)
+            throw UDP_Listener_Exception("Could not close udp listener. Timed out.");
+        else if (wait != WAIT_OBJECT_0)
+            throw UDP_Listener_Exception("Could not close udp listener. Unexpected error.");
+
+        // Close udp listener worker thread
+        if (!CloseHandle(listener_thread))
+            throw UDP_Listener_Exception("Could not close udp listener. Could not close listener thread.");
+        listener_thread = nullptr;
+    }
 }
